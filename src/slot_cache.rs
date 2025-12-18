@@ -1,6 +1,7 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
-use dashmap::DashSet;
+use crate::hash::DashSet;
 use queues::{CircularBuffer, IsQueue};
 use solana_sdk::slot_history::Slot;
 use tracing::error;
@@ -9,6 +10,8 @@ use tracing::error;
 pub struct SlotCache {
     slot_queue: Arc<RwLock<CircularBuffer<Slot>>>,
     slot_set: Arc<DashSet<Slot>>,
+    // Fast-path for the common case: many txns share the same slot.
+    last_seen_slot: Arc<AtomicU64>,
 }
 
 /// SlotCache tracks slot_cache_length number of slots, when capacity is reached
@@ -17,7 +20,8 @@ impl SlotCache {
     pub fn new(slot_cache_length: usize) -> Self {
         Self {
             slot_queue: Arc::new(RwLock::new(CircularBuffer::new(slot_cache_length))),
-            slot_set: Arc::new(DashSet::new()),
+            slot_set: Arc::new(DashSet::default()),
+            last_seen_slot: Arc::new(AtomicU64::new(u64::MAX)),
         }
     }
 
@@ -25,23 +29,27 @@ impl SlotCache {
     // and returns the oldest slot if the cache
     // is at capacity
     pub fn push_pop(&self, slot: Slot) -> Option<Slot> {
+        if self.last_seen_slot.load(Ordering::Relaxed) == slot {
+            return None;
+        }
         if self.slot_set.contains(&slot) {
+            self.last_seen_slot.store(slot, Ordering::Relaxed);
             return None;
         }
         match self.slot_queue.write() {
             Ok(mut slot_queue) => {
-
                 if self.slot_set.contains(&slot) {
+                    self.last_seen_slot.store(slot, Ordering::Relaxed);
                     return None;
                 }
 
                 match slot_queue.add(slot) {
                     Ok(maybe_oldest_slot) => {
-                        if let Some(oldest_slot) = maybe_oldest_slot
-                        {
+                        if let Some(oldest_slot) = maybe_oldest_slot {
                             self.slot_set.remove(&oldest_slot);
                         }
                         self.slot_set.insert(slot);
+                        self.last_seen_slot.store(slot, Ordering::Relaxed);
                         maybe_oldest_slot
                     }
                     Err(e) => {
@@ -114,14 +122,13 @@ mod tests {
         assert_eq!(vec, (0..100).collect::<Vec<Slot>>());
     }
 
-
     #[test]
     fn test_copy_reversed() {
         // Create a SlotCache with a small length for testing
         let slot_cache = SlotCache::new(100);
         for i in (0..100).rev() {
             assert_eq!(slot_cache.push_pop(i), None);
-            assert_eq!(slot_cache.len(), 100-i as usize, "{i}");
+            assert_eq!(slot_cache.len(), 100 - i as usize, "{i}");
         }
 
         let mut vec: Vec<Slot> = Vec::new();

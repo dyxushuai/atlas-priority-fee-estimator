@@ -1,6 +1,7 @@
 pub mod errors;
 pub mod grpc_consumer;
 pub mod grpc_geyser;
+pub(crate) mod hash;
 pub mod model;
 pub mod priority_fee;
 pub mod priority_fee_calculation;

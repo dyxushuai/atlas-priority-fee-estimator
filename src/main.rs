@@ -1,15 +1,17 @@
 use std::{env, net::UdpSocket, sync::Arc};
 
+use atlas_priority_fee_estimator::grpc_geyser::GrpcGeyserImpl;
+use atlas_priority_fee_estimator::priority_fee::PriorityFeeTracker;
+use atlas_priority_fee_estimator::rpc_server::{
+    AtlasPriorityFeeEstimator, AtlasPriorityFeeEstimatorRpcServer,
+};
 use cadence::{BufferedUdpMetricSink, QueuingMetricSink, StatsdClient};
 use cadence_macros::set_global_default;
 use figment::{providers::Env, Figment};
-use jsonrpsee::server::ServerBuilder;
 use jsonrpsee::server::middleware::http::ProxyGetRequestLayer;
+use jsonrpsee::server::{ServerBuilder, ServerConfig};
 use serde::Deserialize;
 use tracing::{error, info};
-use atlas_priority_fee_estimator::grpc_geyser::GrpcGeyserImpl;
-use atlas_priority_fee_estimator::priority_fee::PriorityFeeTracker;
-use atlas_priority_fee_estimator::rpc_server::{AtlasPriorityFeeEstimator, AtlasPriorityFeeEstimatorRpcServer};
 
 #[derive(Debug, Deserialize, Clone)]
 struct EstimatorEnv {
@@ -42,16 +44,16 @@ async fn main() {
     );
 
     let port = env.port.unwrap_or(4141);
-    let server = ServerBuilder::default()
+    let config = ServerConfig::builder().max_connections(100_000).build();
+    let server = ServerBuilder::with_config(config)
         .set_http_middleware(
             tower::ServiceBuilder::new()
                 // Proxy `GET /health` requests to internal `health` method.
                 .layer(
-                    ProxyGetRequestLayer::new("/health", "health")
+                    ProxyGetRequestLayer::new([("/health", "health")])
                         .expect("expected health check to initialize"),
                 ),
         )
-        .max_connections(100_000)
         .build(format!("0.0.0.0:{}", port))
         .await
         .expect(format!("failed to start server on port {}", port).as_str());

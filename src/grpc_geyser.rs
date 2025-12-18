@@ -3,7 +3,7 @@ use std::{collections::HashMap, time::Duration};
 
 use cadence_macros::statsd_count;
 use futures::{sink::SinkExt, stream::StreamExt};
-use rand::distributions::Alphanumeric;
+use rand::distr::Alphanumeric;
 use rand::Rng;
 use tokio::time::sleep;
 use tracing::error;
@@ -130,7 +130,7 @@ fn get_block_subscribe_request() -> SubscribeRequest {
 }
 
 fn generate_random_string(len: usize) -> String {
-    rand::thread_rng()
+    rand::rng()
         .sample_iter(&Alphanumeric)
         .take(len)
         .map(char::from)

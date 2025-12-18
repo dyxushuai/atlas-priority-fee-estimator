@@ -285,10 +285,7 @@ impl AtlasPriorityFeeEstimatorRpcServer for AtlasPriorityFeeEstimator {
         &self,
         get_priority_fee_estimate_request: GetPriorityFeeEstimateRequest,
     ) -> RpcResult<GetPriorityFeeEstimateResponse> {
-        self.execute_priority_fee_estimate_coordinator(
-            get_priority_fee_estimate_request,
-            true,
-        )
+        self.execute_priority_fee_estimate_coordinator(get_priority_fee_estimate_request, true)
     }
 
     fn get_priority_fee_estimate_v2(
@@ -319,7 +316,10 @@ impl AtlasPriorityFeeEstimator {
         is_v1: bool,
     ) -> RpcResult<GetPriorityFeeEstimateResponse> {
         let options = get_priority_fee_estimate_request.options.clone();
-        let include_details = options.as_ref().and_then(|op| op.include_details).unwrap_or(false);
+        let include_details = options
+            .as_ref()
+            .and_then(|op| op.include_details)
+            .unwrap_or(false);
         let reason = validate_get_priority_fee_estimate_request(&get_priority_fee_estimate_request);
         if let Some(reason) = reason {
             return Err(reason);
@@ -382,14 +382,15 @@ impl AtlasPriorityFeeEstimator {
         };
 
         let priority_fee_levels: Option<Vec<(String, MicroLamportPriorityFeeDetails)>> =
-        match priority_fee_levels {
-            None => None,
-            Some(fees_map) => {
-                let mut fees: Vec<(String, MicroLamportPriorityFeeDetails)> = fees_map.into_iter().collect();
-                fees.sort_by(|a, b| b.0.cmp(&a.0));
-                Some(fees)
-            }
-        };
+            match priority_fee_levels {
+                None => None,
+                Some(fees_map) => {
+                    let mut fees: Vec<(String, MicroLamportPriorityFeeDetails)> =
+                        fees_map.into_iter().collect();
+                    fees.sort_by(|a, b| b.0.cmp(&a.0));
+                    Some(fees)
+                }
+            };
 
         if let Some(options) = options.as_ref() {
             if options.include_all_priority_fee_levels == Some(true) {
@@ -461,7 +462,10 @@ pub fn get_recommended_fee(priority_fee_levels: MicroLamportPriorityFeeEstimates
 #[cfg(test)]
 mod tests {
     use crate::priority_fee::PriorityFeeTracker;
-    use crate::rpc_server::{AtlasPriorityFeeEstimator, AtlasPriorityFeeEstimatorRpcServer, GetPriorityFeeEstimateOptions, GetPriorityFeeEstimateRequest};
+    use crate::rpc_server::{
+        AtlasPriorityFeeEstimator, AtlasPriorityFeeEstimatorRpcServer,
+        GetPriorityFeeEstimateOptions, GetPriorityFeeEstimateRequest,
+    };
     use cadence::{NopMetricSink, StatsdClient};
     use jsonrpsee::core::Cow;
     use jsonrpsee::core::__reexports::serde_json;
@@ -588,7 +592,7 @@ mod tests {
             let json_val = format!("{{\"jsonrpc\": \"2.0\",\"id\": \"1\", \"method\": \"getPriorityFeeEstimate\", \"params\": [{param}] }}");
             let res = serde_json::from_str::<Request>(json_val.as_str());
             let res = res.unwrap();
-            assert_request(&res, Id::Str(Cow::const_str("1")), "getPriorityFeeEstimate");
+            assert_request(&res, Id::Str(Cow::Borrowed("1")), "getPriorityFeeEstimate");
 
             if let Some(val) = res.params {
                 let params: Result<Vec<GetPriorityFeeEstimateRequest>, _> =

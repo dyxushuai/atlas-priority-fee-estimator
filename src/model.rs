@@ -1,4 +1,4 @@
-use dashmap::DashMap;
+use crate::hash::DashMap;
 use serde::{Deserialize, Serialize};
 use solana_sdk::clock::Slot;
 use solana_sdk::pubkey::Pubkey;
@@ -122,7 +122,7 @@ pub struct SlotPriorityFees {
 
 impl SlotPriorityFees {
     pub(crate) fn new(slot: Slot, accounts: Vec<Pubkey>, priority_fee: u64, is_vote: bool) -> Self {
-        let account_fees = DashMap::new();
+        let account_fees = DashMap::default();
         let fees = Fees::new(priority_fee as f64, is_vote);
         for account in accounts {
             account_fees.insert(account, fees.clone());

@@ -59,7 +59,7 @@ impl<'a> Calculations<'a> {
     pub fn get_priority_fee_estimates(
         &self,
         priority_fees: &PriorityFeesBySlot,
-    ) -> anyhow::Result<DataStats> {
+    ) -> anyhow::Result<DataStats<'a>> {
         let start = Instant::now();
 
         let result = match self {
@@ -271,7 +271,7 @@ mod tests {
     #[tokio::test]
     async fn test_specific_fee_estimates_for_global_accounts_only() {
         init_metrics();
-        let tracker = PriorityFeesBySlot::new();
+        let tracker = PriorityFeesBySlot::default();
 
         let mut fees = vec![];
         let mut i = 0;
@@ -414,7 +414,7 @@ mod tests {
     #[tokio::test]
     async fn test_specific_fee_estimates_for_global_accounts_only_v2() {
         init_metrics();
-        let tracker = PriorityFeesBySlot::new();
+        let tracker = PriorityFeesBySlot::default();
 
         let mut fees = vec![];
         let mut i = 0;
@@ -513,7 +513,7 @@ mod tests {
     #[tokio::test]
     async fn test_specific_fee_estimates() {
         init_metrics();
-        let tracker = PriorityFeesBySlot::new();
+        let tracker = PriorityFeesBySlot::default();
 
         let mut fees = vec![];
         let mut i = 0;
@@ -655,7 +655,7 @@ mod tests {
   #[tokio::test]
     async fn test_specific_fee_estimates_v2() {
         init_metrics();
-        let tracker = PriorityFeesBySlot::new();
+        let tracker = PriorityFeesBySlot::default();
 
         let mut fees = vec![];
         let mut i = 0;

@@ -8,15 +8,16 @@ use crate::priority_fee_calculation::Calculations;
 use crate::priority_fee_calculation::Calculations::Calculation2;
 use crate::rpc_server::get_recommended_fee;
 use crate::slot_cache::SlotCache;
+use agave_feature_set::FeatureSet;
 use cadence_macros::statsd_count;
 use cadence_macros::statsd_gauge;
-use dashmap::DashMap;
+use dashmap::mapref::entry::Entry;
 use solana::storage::confirmed_block::Message;
-use solana_program_runtime::compute_budget::ComputeBudget;
-use solana_program_runtime::prioritization_fee::PrioritizationFeeDetails;
-use solana_sdk::instruction::CompiledInstruction;
+use solana_compute_budget_instruction::instructions_processor::process_compute_budget_instructions;
+use solana_message::compiled_instruction::CompiledInstruction;
 use solana_sdk::transaction::TransactionError;
 use solana_sdk::{pubkey::Pubkey, slot_history::Slot};
+use solana_svm_transaction::instruction::SVMInstruction;
 use statrs::statistics::{Data, Distribution, OrderStatistics};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -30,7 +31,6 @@ use yellowstone_grpc_proto::solana;
 #[derive(Debug, Clone)]
 pub struct PriorityFeeTracker {
     priority_fees: Arc<PriorityFeesBySlot>,
-    compute_budget: ComputeBudget,
     slot_cache: SlotCache,
 }
 
@@ -105,9 +105,8 @@ fn extract_from_message(
 fn calculate_priority_fee_details(
     accounts: &Vec<Pubkey>,
     instructions: &Vec<CompiledInstruction>,
-    budget: &mut ComputeBudget,
-) -> Result<PrioritizationFeeDetails, TransactionError> {
-    let instructions_for_processing: Vec<(&Pubkey, &CompiledInstruction)> = instructions
+) -> Result<u64, TransactionError> {
+    let instructions_for_processing: Vec<(&Pubkey, SVMInstruction)> = instructions
         .iter()
         .filter_map(|ix: &CompiledInstruction| {
             let account = accounts.get(ix.program_id_index as usize);
@@ -115,11 +114,14 @@ fn calculate_priority_fee_details(
                 statsd_count!("program_id_index_not_found", 1);
                 return None;
             }
-            Some((account.unwrap(), ix))
+            Some((account.unwrap(), SVMInstruction::from(ix)))
         })
         .collect();
 
-    budget.process_instructions(instructions_for_processing.into_iter(), true, true)
+    let feature_set = FeatureSet::default();
+    let compute_budget_limits =
+        process_compute_budget_instructions(instructions_for_processing.into_iter(), &feature_set)?;
+    Ok(compute_budget_limits.compute_unit_price)
 }
 
 pub(crate) fn construct_writable_accounts<T>(
@@ -160,23 +162,31 @@ impl GrpcConsumer for PriorityFeeTracker {
                 for txn in block.transactions {
                     let res = extract_from_transaction(txn);
                     if let Err(error) = res {
-                        statsd_count!(error.into(), 1);
+                        let err_str: &str = match error {
+                            TransactionValidationError::TransactionFailed => "txn_failed",
+                            TransactionValidationError::TransactionMissing => "txn_missing",
+                            TransactionValidationError::MessageMissing => "message_missing",
+                            TransactionValidationError::InvalidAccount => "invalid_pubkey",
+                        };
+                        statsd_count!(err_str, 1);
                         continue;
                     }
                     let (message, writable_accounts, is_vote) = res.unwrap();
 
                     let res = extract_from_message(message);
                     if let Err(error) = res {
-                        statsd_count!(error.into(), 1);
+                        let err_str: &str = match error {
+                            TransactionValidationError::TransactionFailed => "txn_failed",
+                            TransactionValidationError::TransactionMissing => "txn_missing",
+                            TransactionValidationError::MessageMissing => "message_missing",
+                            TransactionValidationError::InvalidAccount => "invalid_pubkey",
+                        };
+                        statsd_count!(err_str, 1);
                         continue;
                     }
                     let (accounts, instructions, header) = res.unwrap();
-                    let mut compute_budget = self.compute_budget;
-                    let priority_fee_details = calculate_priority_fee_details(
-                        &accounts,
-                        &instructions,
-                        &mut compute_budget,
-                    );
+                    let priority_fee_details =
+                        calculate_priority_fee_details(&accounts, &instructions);
 
                     let writable_accounts = vec![
                         construct_writable_accounts(accounts, &header),
@@ -190,10 +200,10 @@ impl GrpcConsumer for PriorityFeeTracker {
                     );
                     statsd_count!("txns_processed", 1);
                     match priority_fee_details {
-                        Ok(priority_fee_details) => self.push_priority_fee_for_txn(
+                        Ok(priority_fee) => self.push_priority_fee_for_txn(
                             slot,
                             writable_accounts,
-                            priority_fee_details.get_priority(),
+                            priority_fee,
                             is_vote,
                         ),
                         Err(e) => {
@@ -211,9 +221,8 @@ impl GrpcConsumer for PriorityFeeTracker {
 impl PriorityFeeTracker {
     pub fn new(slot_cache_length: usize) -> Self {
         let tracker = Self {
-            priority_fees: Arc::new(DashMap::new()),
+            priority_fees: Arc::new(PriorityFeesBySlot::default()),
             slot_cache: SlotCache::new(slot_cache_length),
-            compute_budget: ComputeBudget::default(),
         };
         tracker.poll_fees();
         tracker
@@ -282,14 +291,9 @@ impl PriorityFeeTracker {
         // update the slot cache so we can keep track of the slots we have processed in order
         // for removal later
         let slot_to_remove = self.slot_cache.push_pop(slot);
-        if !self.priority_fees.contains_key(&slot) {
-            self.priority_fees.insert(
-                slot,
-                SlotPriorityFees::new(slot, accounts, priority_fee, is_vote),
-            );
-        } else {
-            // update the slot priority fees
-            self.priority_fees.entry(slot).and_modify(|priority_fees| {
+        match self.priority_fees.entry(slot) {
+            Entry::Occupied(mut entry) => {
+                let priority_fees = entry.get_mut();
                 priority_fees.fees.add_fee(priority_fee as f64, is_vote);
                 for account in accounts {
                     priority_fees
@@ -298,10 +302,14 @@ impl PriorityFeeTracker {
                         .and_modify(|fees| fees.add_fee(priority_fee as f64, is_vote))
                         .or_insert(Fees::new(priority_fee as f64, is_vote));
                 }
-            });
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(SlotPriorityFees::new(slot, accounts, priority_fee, is_vote));
+            }
         }
-        if slot_to_remove.is_some() {
-            self.priority_fees.remove(&slot_to_remove.unwrap());
+
+        if let Some(slot_to_remove) = slot_to_remove {
+            self.priority_fees.remove(&slot_to_remove);
         }
     }
 
@@ -320,7 +328,10 @@ impl PriorityFeeTracker {
     pub fn calculate_priority_fee_details(
         &self,
         calculation: &Calculations,
-    ) -> anyhow::Result<(MicroLamportPriorityFeeEstimates, HashMap<String, MicroLamportPriorityFeeDetails>)> {
+    ) -> anyhow::Result<(
+        MicroLamportPriorityFeeEstimates,
+        HashMap<String, MicroLamportPriorityFeeDetails>,
+    )> {
         let data = calculation.get_priority_fee_estimates(&self.priority_fees)?;
         let final_result: MicroLamportPriorityFeeEstimates = data.clone().into_iter().fold(
             MicroLamportPriorityFeeEstimates::default(),
@@ -383,9 +394,7 @@ mod tests {
     use anyhow::Context;
     use cadence::{NopMetricSink, StatsdClient};
     use cadence_macros::set_global_default;
-    use solana_sdk::compute_budget::ComputeBudgetInstruction::{
-        RequestHeapFrame, SetComputeUnitLimit, SetComputeUnitPrice, SetLoadedAccountsDataSizeLimit,
-    };
+    use solana_compute_budget_interface::ComputeBudgetInstruction;
     use std::collections::HashSet;
 
     fn init_metrics() {
@@ -685,8 +694,14 @@ mod tests {
         assert_eq!(estimates.get("All Accounts").unwrap().estimates.low, 0.0);
         assert_eq!(estimates.get("All Accounts").unwrap().estimates.medium, 0.0);
         assert_eq!(estimates.get("All Accounts").unwrap().estimates.high, 0.0);
-        assert_eq!(estimates.get("All Accounts").unwrap().estimates.very_high, 0.0);
-        assert_eq!(estimates.get("All Accounts").unwrap().estimates.unsafe_max, 0.0);
+        assert_eq!(
+            estimates.get("All Accounts").unwrap().estimates.very_high,
+            0.0
+        );
+        assert_eq!(
+            estimates.get("All Accounts").unwrap().estimates.unsafe_max,
+            0.0
+        );
         assert_eq!(estimates.get("All Accounts").unwrap().count, 0);
         assert!(estimates.get("All Accounts").unwrap().mean.is_nan());
         assert!(estimates.get("All Accounts").unwrap().stdev.is_nan());
@@ -710,8 +725,14 @@ mod tests {
         assert_eq!(estimates.get("All Accounts").unwrap().estimates.low, 0.0);
         assert_eq!(estimates.get("All Accounts").unwrap().estimates.medium, 0.0);
         assert_eq!(estimates.get("All Accounts").unwrap().estimates.high, 0.0);
-        assert_eq!(estimates.get("All Accounts").unwrap().estimates.very_high, 0.0);
-        assert_eq!(estimates.get("All Accounts").unwrap().estimates.unsafe_max, 0.0);
+        assert_eq!(
+            estimates.get("All Accounts").unwrap().estimates.very_high,
+            0.0
+        );
+        assert_eq!(
+            estimates.get("All Accounts").unwrap().estimates.unsafe_max,
+            0.0
+        );
         assert_eq!(estimates.get("All Accounts").unwrap().count, 0);
         assert!(estimates.get("All Accounts").unwrap().mean.is_nan());
         assert!(estimates.get("All Accounts").unwrap().stdev.is_nan());
@@ -735,13 +756,18 @@ mod tests {
         assert_eq!(estimates.get("All Accounts").unwrap().estimates.low, 0.0);
         assert_eq!(estimates.get("All Accounts").unwrap().estimates.medium, 0.0);
         assert_eq!(estimates.get("All Accounts").unwrap().estimates.high, 0.0);
-        assert_eq!(estimates.get("All Accounts").unwrap().estimates.very_high, 0.0);
-        assert_eq!(estimates.get("All Accounts").unwrap().estimates.unsafe_max, 0.0);
+        assert_eq!(
+            estimates.get("All Accounts").unwrap().estimates.very_high,
+            0.0
+        );
+        assert_eq!(
+            estimates.get("All Accounts").unwrap().estimates.unsafe_max,
+            0.0
+        );
         assert_eq!(estimates.get("All Accounts").unwrap().count, 0);
         assert!(estimates.get("All Accounts").unwrap().mean.is_nan());
         assert!(estimates.get("All Accounts").unwrap().stdev.is_nan());
         assert!(estimates.get("All Accounts").unwrap().skew.is_nan());
-
 
         // Now test the fee estimates for a known priority level, let's say medium (50th percentile)
         let estimates = calculation_details_1(&acct, true, true, &Some(150), &tracker);
@@ -761,8 +787,14 @@ mod tests {
         assert_eq!(estimates.get("All Accounts").unwrap().estimates.low, 0.0);
         assert_eq!(estimates.get("All Accounts").unwrap().estimates.medium, 0.0);
         assert_eq!(estimates.get("All Accounts").unwrap().estimates.high, 0.0);
-        assert_eq!(estimates.get("All Accounts").unwrap().estimates.very_high, 0.0);
-        assert_eq!(estimates.get("All Accounts").unwrap().estimates.unsafe_max, 0.0);
+        assert_eq!(
+            estimates.get("All Accounts").unwrap().estimates.very_high,
+            0.0
+        );
+        assert_eq!(
+            estimates.get("All Accounts").unwrap().estimates.unsafe_max,
+            0.0
+        );
         assert_eq!(estimates.get("All Accounts").unwrap().count, 0);
         assert!(estimates.get("All Accounts").unwrap().mean.is_nan());
         assert!(estimates.get("All Accounts").unwrap().stdev.is_nan());
@@ -806,7 +838,6 @@ mod tests {
         assert_eq!(estimates.get("Global").unwrap().mean, 50.0);
         assert_eq!(estimates.get("Global").unwrap().stdev, 29.0);
         assert!(estimates.get("Global").unwrap().skew.is_nan());
-
 
         // Now test the fee estimates for a known priority level, let's say medium (50th percentile)
         let estimates = calculation_details_2(&acct, false, false, &Some(150), &tracker);
@@ -1676,7 +1707,6 @@ mod tests {
         }
     }
 
-    const MICRO_LAMPORTS_PER_LAMPORT: u128 = 1_000_000;
     #[test]
     fn test_budget_calculation() -> Result<(), anyhow::Error> {
         // Ok(PrioritizationFeeDetails { fee: 4923, priority: 39066 })
@@ -1688,18 +1718,10 @@ mod tests {
             "11111111111111111111111111111111",             // budget program for accounts account
         ];
 
-        let comp1 = SetComputeUnitLimit(100_000)
-            .pack()
-            .context("Could not pack compute unit limit")?;
-        let comp2 = SetComputeUnitPrice(200_000)
-            .pack()
-            .context("Could not pack compute unit price")?;
-        let comp3 = SetLoadedAccountsDataSizeLimit(300_000)
-            .pack()
-            .context("Could not pack loaded account data size limit")?;
-        let comp4 = RequestHeapFrame(64 * 1024)
-            .pack()
-            .context("Could not pack request for heap frame")?;
+        let comp1 = ComputeBudgetInstruction::set_compute_unit_limit(100_000).data;
+        let comp2 = ComputeBudgetInstruction::set_compute_unit_price(200_000).data;
+        let comp3 = ComputeBudgetInstruction::set_loaded_accounts_data_size_limit(300_000).data;
+        let comp4 = ComputeBudgetInstruction::request_heap_frame(64 * 1024).data;
 
         let random_account = "some app -- ignore".as_bytes().to_vec();
         let instructions = [
@@ -1714,14 +1736,8 @@ mod tests {
         let fee = calculate_priority_fee_details(
             &construct_accounts(&account_keys[..])?,
             &construct_instructions(instructions.to_vec())?,
-            &mut ComputeBudget::default(),
         )?;
-        assert_eq!(
-            fee.get_fee() as u128,
-            (200_000 * 100_000 + MICRO_LAMPORTS_PER_LAMPORT - 1)
-                / MICRO_LAMPORTS_PER_LAMPORT as u128
-        );
-        assert_eq!(fee.get_priority(), 200_000);
+        assert_eq!(fee, 200_000);
 
         Ok::<(), anyhow::Error>(())
     }

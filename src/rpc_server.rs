@@ -30,9 +30,13 @@ use solana_sdk::{pubkey::Pubkey, transaction::VersionedTransaction};
 use solana_transaction_status::UiTransactionEncoding;
 use tracing::{info, warn};
 
+/// Main estimator struct that handles RPC requests.
 pub struct AtlasPriorityFeeEstimator {
+    /// Tracker for priority fees.
     pub priority_fee_tracker: Arc<PriorityFeeTracker>,
+    /// Optional Solana RPC client for fetching transaction details.
     pub rpc_client: Option<RpcClient>,
+    /// Maximum number of slots to look back for estimation.
     pub max_lookback_slots: usize,
 }
 
@@ -45,53 +49,70 @@ impl fmt::Debug for AtlasPriorityFeeEstimator {
     }
 }
 
+/// Request object for the `getPriorityFeeEstimate` method.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(
     rename_all(serialize = "camelCase", deserialize = "camelCase"),
     deny_unknown_fields
 )]
 pub struct GetPriorityFeeEstimateRequest {
-    pub transaction: Option<String>,       // estimate fee for a txn
+    /// Optional base58-encoded transaction to estimate fees for.
+    pub transaction: Option<String>, // estimate fee for a txn
+    /// Optional list of account keys to estimate fees for.
     pub account_keys: Option<Vec<String>>, // estimate fee for a list of accounts
+    /// Optional estimation options.
     pub options: Option<GetPriorityFeeEstimateOptions>,
 }
 
+/// Options for priority fee estimation.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(
     rename_all(serialize = "camelCase", deserialize = "camelCase"),
     deny_unknown_fields
 )]
 pub struct GetPriorityFeeEstimateOptions {
-    // controls input txn encoding
+    /// Encoding for the input transaction.
     pub transaction_encoding: Option<UiTransactionEncoding>,
-    // controls custom priority fee level response
+    /// Desired priority level for the estimate.
     pub priority_level: Option<PriorityLevel>, // Default to MEDIUM
+    /// Whether to include all priority level estimates in the response.
     pub include_all_priority_fee_levels: Option<bool>, // Include all priority level estimates in the response
     #[serde()]
+    /// Number of slots to look back for estimation.
     pub lookback_slots: Option<u32>, // how many slots to look back on, default 50, min 1, max 300
+    /// Whether to include vote transactions in the estimate.
     pub include_vote: Option<bool>, // include vote txns in the estimate
-    // returns recommended fee, incompatible with custom controls. Currently the recommended fee is the median fee excluding vote txns
+    /// Whether to return the recommended fee (median fee excluding vote txns).
     pub recommended: Option<bool>, // return the recommended fee (median fee excluding vote txns)
+    /// Whether to treat empty slots as having zero fees.
     pub evaluate_empty_slot_as_zero: Option<bool>, // if true than slots with no transactions will be treated as 0
+    /// Whether to include detailed breakdown of data used for calculation.
     pub include_details: Option<bool>, // default to false, if provided will include detailed breakdown of data used for calculation
 }
 
+/// Response object for the `getPriorityFeeEstimate` method.
 #[derive(Serialize, Clone, Debug, Default)]
 #[serde(rename_all(serialize = "camelCase", deserialize = "camelCase"))]
 pub struct GetPriorityFeeEstimateResponse {
+    /// The estimated priority fee in micro-lamports.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub priority_fee_estimate: Option<f64>,
+    /// Estimates for all priority levels, if requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub priority_fee_levels: Option<MicroLamportPriorityFeeEstimates>,
+    /// Detailed breakdown of estimates per account, if requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub priority_fee_estimate_details: Option<Vec<(String, MicroLamportPriorityFeeDetails)>>,
 }
 
+/// RPC trait for the Atlas Priority Fee Estimator.
 #[rpc(server)]
 pub trait AtlasPriorityFeeEstimatorRpc {
+    /// Returns the health status of the estimator.
     #[method(name = "health")]
     fn health(&self) -> String;
 
+    /// Returns a priority fee estimate based on the provided request.
     #[method(name = "getPriorityFeeEstimate")]
     fn get_priority_fee_estimate(
         &self,
@@ -100,12 +121,14 @@ pub trait AtlasPriorityFeeEstimatorRpc {
         self.get_priority_fee_estimate_v2(get_priority_fee_estimate_request)
     }
 
+    /// Returns a priority fee estimate using algorithm version 1.
     #[method(name = "getPriorityFeeEstimateV1")]
     fn get_priority_fee_estimate_v1(
         &self,
         get_priority_fee_estimate_request: GetPriorityFeeEstimateRequest,
     ) -> RpcResult<GetPriorityFeeEstimateResponse>;
 
+    /// Returns a priority fee estimate using algorithm version 2.
     #[method(name = "getPriorityFeeEstimateV2")]
     fn get_priority_fee_estimate_v2(
         &self,
@@ -183,7 +206,7 @@ fn get_from_address_lookup_tables(
             .iter()
             .map(|a| {
                 let indices: HashSet<u8> = HashSet::from_iter(
-                    vec![a.readonly_indexes.clone(), a.writable_indexes.clone()].concat(),
+                    [a.readonly_indexes.clone(), a.writable_indexes.clone()].concat(),
                 );
                 lookup_table_indices.insert(a.account_key.to_string(), indices);
                 a.account_key
@@ -264,7 +287,7 @@ fn get_accounts(
             })?;
             let (_, transaction) =
                 decode_and_deserialize::<VersionedTransaction>(transaction, binary_encoding)?;
-            let account_keys: Vec<String> = vec![
+            let account_keys: Vec<String> = [
                 get_from_account_keys(&transaction),
                 get_from_address_lookup_tables(rpc_client, &transaction),
             ]
@@ -297,17 +320,17 @@ impl AtlasPriorityFeeEstimatorRpcServer for AtlasPriorityFeeEstimator {
 }
 
 impl AtlasPriorityFeeEstimator {
+    /// Creates a new AtlasPriorityFeeEstimator.
     pub fn new(
         priority_fee_tracker: Arc<PriorityFeeTracker>,
         rpc_url: String,
         max_lookback_slots: usize,
     ) -> Self {
-        let server = AtlasPriorityFeeEstimator {
+        AtlasPriorityFeeEstimator {
             priority_fee_tracker,
             rpc_client: Some(RpcClient::new(rpc_url)),
             max_lookback_slots,
-        };
-        server
+        }
     }
 
     fn execute_priority_fee_estimate_coordinator(
@@ -333,7 +356,7 @@ impl AtlasPriorityFeeEstimator {
             .iter()
             .filter_map(|a| Pubkey::from_str(a).ok())
             .collect();
-        let lookback_slots = options.as_ref().map(|o| o.lookback_slots).flatten();
+        let lookback_slots = options.as_ref().and_then(|o| o.lookback_slots);
         if let Some(lookback_slots) = &lookback_slots {
             if *lookback_slots < 1 || *lookback_slots as usize > self.max_lookback_slots {
                 return Err(invalid_request("lookback_slots must be between 1 and 150"));
@@ -417,9 +440,8 @@ impl AtlasPriorityFeeEstimator {
                 });
             }
         }
-        let recommended = options.map_or(false, |o: GetPriorityFeeEstimateOptions| {
-            o.recommended.unwrap_or(false)
-        });
+        let recommended =
+            options.is_some_and(|o: GetPriorityFeeEstimateOptions| o.recommended.unwrap_or(false));
         let priority_fee = if recommended {
             get_recommended_fee(total_priority_fee_levels)
         } else {
@@ -450,6 +472,8 @@ fn should_include_empty_slots(options: &Option<GetPriorityFeeEstimateOptions>) -
 
 const MIN_RECOMMENDED_PRIORITY_FEE: f64 = 10_000.0;
 
+/// Returns the recommended priority fee based on the provided estimates.
+/// Currently, the recommended fee is the medium (50th percentile) fee.
 pub fn get_recommended_fee(priority_fee_levels: MicroLamportPriorityFeeEstimates) -> f64 {
     let recommended = if priority_fee_levels.medium > MIN_RECOMMENDED_PRIORITY_FEE {
         priority_fee_levels.medium

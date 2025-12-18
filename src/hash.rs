@@ -4,5 +4,9 @@
 /// resistance, prefer a slower, more robust hasher.
 type RapidBuildHasher = rapidhash::fast::RandomState;
 
-pub type DashMap<K, V> = dashmap::DashMap<K, V, RapidBuildHasher>;
-pub type DashSet<K> = dashmap::DashSet<K, RapidBuildHasher>;
+/// Thread-safe hash map using Rapidhash.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) type DashMap<K, V> = dashmap::DashMap<K, V, RapidBuildHasher>;
+/// Thread-safe hash set using Rapidhash.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) type DashSet<K> = dashmap::DashSet<K, RapidBuildHasher>;

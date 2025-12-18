@@ -16,6 +16,7 @@ use yellowstone_grpc_proto::tonic::codec::CompressionEncoding;
 
 use crate::grpc_consumer::GrpcConsumer;
 
+/// Implementation of a gRPC Geyser client that streams updates to consumers.
 pub struct GrpcGeyserImpl {
     endpoint: String,
     auth_header: Option<String>,
@@ -23,6 +24,7 @@ pub struct GrpcGeyserImpl {
 }
 
 impl GrpcGeyserImpl {
+    /// Creates a new GrpcGeyserImpl and starts polling for blocks.
     pub fn new(
         endpoint: String,
         auth_header: Option<String>,
@@ -84,18 +86,15 @@ impl GrpcGeyserImpl {
                                     statsd_count!("grpc_consume_error", 1);
                                 }
                             }
-                            match update.update_oneof {
-                                Some(UpdateOneof::Ping(_)) => {
-                                    // This is necessary to keep load balancers that expect client pings alive. If your load balancer doesn't
-                                    // require periodic client pings then this is unnecessary
-                                    let ping = grpc_tx.send(ping()).await;
-                                    if let Err(e) = ping {
-                                        error!("Error sending ping: {}", e);
-                                        statsd_count!("grpc_ping_error", 1);
-                                        break;
-                                    }
+                            if let Some(UpdateOneof::Ping(_)) = update.update_oneof {
+                                // This is necessary to keep load balancers that expect client pings alive. If your load balancer doesn't
+                                // require periodic client pings then this is unnecessary
+                                let ping = grpc_tx.send(ping()).await;
+                                if let Err(e) = ping {
+                                    error!("Error sending ping: {}", e);
+                                    statsd_count!("grpc_ping_error", 1);
+                                    break;
                                 }
-                                _ => {}
                             }
                         }
                         Err(error) => {

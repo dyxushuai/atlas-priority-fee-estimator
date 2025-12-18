@@ -28,6 +28,7 @@ use yellowstone_grpc_proto::geyser::{SubscribeUpdate, SubscribeUpdateTransaction
 use yellowstone_grpc_proto::prelude::{MessageHeader, Transaction, TransactionStatusMeta};
 use yellowstone_grpc_proto::solana;
 
+/// Tracks priority fees across slots and provides estimation methods.
 #[derive(Debug, Clone)]
 pub struct PriorityFeeTracker {
     priority_fees: Arc<PriorityFeesBySlot>,
@@ -47,9 +48,7 @@ fn extract_from_meta(
             let writable = meta
                 .loaded_writable_addresses
                 .into_iter()
-                .map(|v| Pubkey::try_from(v))
-                .filter(|p| p.is_ok())
-                .map(|p| p.unwrap())
+                .filter_map(|v| Pubkey::try_from(v).ok())
                 .collect::<Vec<Pubkey>>();
 
             Ok(writable)
@@ -73,17 +72,14 @@ fn extract_from_transaction(
     Ok((message, writable_accounts, is_vote))
 }
 
-fn extract_from_message(
-    message: Message,
-) -> Result<
-    (Vec<Pubkey>, Vec<CompiledInstruction>, Option<MessageHeader>),
-    TransactionValidationError,
-> {
+type MessageDetails = (Vec<Pubkey>, Vec<CompiledInstruction>, Option<MessageHeader>);
+
+fn extract_from_message(message: Message) -> Result<MessageDetails, TransactionValidationError> {
     let account_keys = message.account_keys;
     let compiled_instructions = message.instructions;
 
     let accounts: Result<Vec<Pubkey>, _> = account_keys.into_iter().map(Pubkey::try_from).collect();
-    if let Err(_) = accounts {
+    if accounts.is_err() {
         return Err(TransactionValidationError::InvalidAccount);
     }
     let accounts = accounts.unwrap();
@@ -103,8 +99,8 @@ fn extract_from_message(
 }
 
 fn calculate_priority_fee_details(
-    accounts: &Vec<Pubkey>,
-    instructions: &Vec<CompiledInstruction>,
+    accounts: &[Pubkey],
+    instructions: &[CompiledInstruction],
 ) -> Result<u64, TransactionError> {
     let instructions_for_processing: Vec<(&Pubkey, SVMInstruction)> = instructions
         .iter()
@@ -188,7 +184,7 @@ impl GrpcConsumer for PriorityFeeTracker {
                     let priority_fee_details =
                         calculate_priority_fee_details(&accounts, &instructions);
 
-                    let writable_accounts = vec![
+                    let writable_accounts = [
                         construct_writable_accounts(accounts, &header),
                         writable_accounts,
                     ]
@@ -219,6 +215,7 @@ impl GrpcConsumer for PriorityFeeTracker {
 }
 
 impl PriorityFeeTracker {
+    /// Creates a new PriorityFeeTracker with the specified slot cache length.
     pub fn new(slot_cache_length: usize) -> Self {
         let tracker = Self {
             priority_fees: Arc::new(PriorityFeesBySlot::default()),
@@ -241,7 +238,7 @@ impl PriorityFeeTracker {
 
     fn record_general_fees(&self) {
         let global_fees = self.calculate_priority_fee(&Calculation2 {
-            accounts: &vec![],
+            accounts: &[],
             include_vote: false,
             include_empty_slots: false,
             lookback_period: &None,
@@ -281,6 +278,7 @@ impl PriorityFeeTracker {
         }
     }
 
+    /// Pushes a priority fee for a transaction into the tracker.
     pub fn push_priority_fee_for_txn(
         &self,
         slot: Slot,
@@ -313,6 +311,7 @@ impl PriorityFeeTracker {
         }
     }
 
+    /// Calculates priority fee estimates based on the provided calculation algorithm.
     pub fn calculate_priority_fee(
         &self,
         calculation: &Calculations,
@@ -325,6 +324,7 @@ impl PriorityFeeTracker {
         Ok(res)
     }
 
+    /// Calculates detailed priority fee estimates and statistics.
     pub fn calculate_priority_fee_details(
         &self,
         calculation: &Calculations,
@@ -404,7 +404,7 @@ mod tests {
     }
 
     fn calculation1(
-        accounts: &Vec<Pubkey>,
+        accounts: &[Pubkey],
         include_vote: bool,
         include_empty_slot: bool,
         lookback_period: &Option<u32>,
@@ -418,11 +418,11 @@ mod tests {
         );
         tracker
             .calculate_priority_fee(&calc)
-            .expect(format!("estimates for calc1 to be valid with {:?}", calc).as_str())
+            .unwrap_or_else(|_| panic!("estimates for calc1 to be valid with {:?}", calc))
     }
 
     fn calculation_details_1(
-        accounts: &Vec<Pubkey>,
+        accounts: &[Pubkey],
         include_vote: bool,
         include_empty_slot: bool,
         lookback_period: &Option<u32>,
@@ -436,12 +436,12 @@ mod tests {
         );
         tracker
             .calculate_priority_fee_details(&calc)
-            .expect(format!("estimates for calc1 to be valid with {:?}", calc).as_str())
+            .unwrap_or_else(|_| panic!("estimates for calc1 to be valid with {:?}", calc))
             .1
     }
 
     fn calculation2(
-        accounts: &Vec<Pubkey>,
+        accounts: &[Pubkey],
         include_vote: bool,
         include_empty_slot: bool,
         lookback_period: &Option<u32>,
@@ -455,11 +455,11 @@ mod tests {
         );
         tracker
             .calculate_priority_fee(&calc)
-            .expect(format!("estimates for calc2 to be valid with {:?}", calc).as_str())
+            .unwrap_or_else(|_| panic!("estimates for calc2 to be valid with {:?}", calc))
     }
 
     fn calculation_details_2(
-        accounts: &Vec<Pubkey>,
+        accounts: &[Pubkey],
         include_vote: bool,
         include_empty_slot: bool,
         lookback_period: &Option<u32>,
@@ -473,7 +473,7 @@ mod tests {
         );
         tracker
             .calculate_priority_fee_details(&calc)
-            .expect(format!("estimates for calc2 to be valid with {:?}", calc).as_str())
+            .unwrap_or_else(|_| panic!("estimates for calc2 to be valid with {:?}", calc))
             .1
     }
 
@@ -482,20 +482,15 @@ mod tests {
         init_metrics();
         let tracker = PriorityFeeTracker::new(10);
 
-        let mut fees = vec![];
-        let mut i = 0;
-        while i <= 100 {
-            fees.push(i as f64);
-            i += 1;
-        }
+        let fees = (0..=100).map(|i| i as f64).collect::<Vec<_>>();
         let account_1 = Pubkey::new_unique();
         let account_2 = Pubkey::new_unique();
         let account_3 = Pubkey::new_unique();
         let accounts = vec![account_1, account_2, account_3];
 
         // Simulate adding the fixed fees as both account-specific and transaction fees
-        for fee in fees.clone() {
-            tracker.push_priority_fee_for_txn(1, accounts.clone(), fee as u64, false);
+        for fee in &fees {
+            tracker.push_priority_fee_for_txn(1, accounts.clone(), *fee as u64, false);
         }
 
         // Now test the fee estimates for a known priority level, let's say medium (50th percentile)
@@ -569,20 +564,15 @@ mod tests {
         init_metrics();
         let tracker = PriorityFeeTracker::new(10);
 
-        let mut fees = vec![];
-        let mut i = 0;
-        while i <= 100 {
-            fees.push(i as f64);
-            i += 1;
-        }
+        let fees = (0..=100).map(|i| i as f64).collect::<Vec<_>>();
         let account_1 = Pubkey::new_unique();
         let account_2 = Pubkey::new_unique();
         let account_3 = Pubkey::new_unique();
         let accounts = vec![account_1, account_2, account_3];
 
         // Simulate adding the fixed fees as both account-specific and transaction fees
-        for fee in fees.clone() {
-            tracker.push_priority_fee_for_txn(1, accounts.clone(), fee as u64, false);
+        for fee in &fees {
+            tracker.push_priority_fee_for_txn(1, accounts.clone(), *fee as u64, false);
         }
 
         let acct = vec![];
@@ -657,20 +647,15 @@ mod tests {
         init_metrics();
         let tracker = PriorityFeeTracker::new(10);
 
-        let mut fees = vec![];
-        let mut i = 0;
-        while i <= 100 {
-            fees.push(i as f64);
-            i += 1;
-        }
+        let fees = (0..=100).map(|i| i as f64).collect::<Vec<_>>();
         let account_1 = Pubkey::new_unique();
         let account_2 = Pubkey::new_unique();
         let account_3 = Pubkey::new_unique();
         let accounts = vec![account_1, account_2, account_3];
 
         // Simulate adding the fixed fees as both account-specific and transaction fees
-        for fee in fees.clone() {
-            tracker.push_priority_fee_for_txn(1, accounts.clone(), fee as u64, false);
+        for fee in &fees {
+            tracker.push_priority_fee_for_txn(1, accounts.clone(), *fee as u64, false);
         }
 
         // Now test the fee estimates for a known priority level, let's say medium (50th percentile)
@@ -806,20 +791,15 @@ mod tests {
         init_metrics();
         let tracker = PriorityFeeTracker::new(10);
 
-        let mut fees = vec![];
-        let mut i = 0;
-        while i <= 100 {
-            fees.push(i as f64);
-            i += 1;
-        }
+        let fees = (0..=100).map(|i| i as f64).collect::<Vec<_>>();
         let account_1 = Pubkey::new_unique();
         let account_2 = Pubkey::new_unique();
         let account_3 = Pubkey::new_unique();
         let accounts = vec![account_1, account_2, account_3];
 
         // Simulate adding the fixed fees as both account-specific and transaction fees
-        for fee in fees.clone() {
-            tracker.push_priority_fee_for_txn(1, accounts.clone(), fee as u64, false);
+        for fee in &fees {
+            tracker.push_priority_fee_for_txn(1, accounts.clone(), *fee as u64, false);
         }
 
         let acct = vec![];
@@ -888,29 +868,18 @@ mod tests {
         init_metrics();
         let tracker = PriorityFeeTracker::new(10);
 
-        let mut fees = vec![];
-        let mut i = 0;
-        while i <= 100 {
-            fees.push(i as f64);
-            i += 1;
-        }
+        let fees = (0..=100).map(|i| i as f64).collect::<Vec<_>>();
         let account_1 = Pubkey::new_unique();
         let account_2 = Pubkey::new_unique();
         let account_3 = Pubkey::new_unique();
         let accounts = vec![account_1, account_2, account_3];
 
         // Simulate adding the fixed fees as both account-specific and transaction fees
-        for fee in fees.clone() {
-            tracker.push_priority_fee_for_txn(1, accounts.clone(), fee as u64, false);
+        for fee in &fees {
+            tracker.push_priority_fee_for_txn(1, accounts.clone(), *fee as u64, false);
         }
 
-        let estimates = calculation1(
-            &vec![accounts.get(0).unwrap().clone()],
-            false,
-            false,
-            &None,
-            &tracker,
-        );
+        let estimates = calculation1(&[*accounts.first().unwrap()], false, false, &None, &tracker);
         // Since the fixed fees are evenly distributed, the 50th percentile should be the middle value
         assert_eq!(estimates.min, 0.0);
         assert_eq!(estimates.low, 25.0);
@@ -921,7 +890,7 @@ mod tests {
 
         // Now test the fee estimates for a known priority level, let's say medium (50th percentile)
         let estimates = calculation1(
-            &vec![accounts.get(0).unwrap().clone()],
+            &[*accounts.first().unwrap()],
             false,
             false,
             &Some(150),
@@ -936,13 +905,7 @@ mod tests {
         assert_eq!(estimates.unsafe_max, 100.0);
 
         // Now test the fee estimates for a known priority level, let's say medium (50th percentile)
-        let estimates = calculation1(
-            &vec![accounts.get(0).unwrap().clone()],
-            false,
-            true,
-            &None,
-            &tracker,
-        );
+        let estimates = calculation1(&[*accounts.first().unwrap()], false, true, &None, &tracker);
         // Since the fixed fees are evenly distributed, the 50th percentile should be the middle value
         assert_eq!(estimates.min, 0.0);
         assert_eq!(estimates.low, 25.0);
@@ -953,7 +916,7 @@ mod tests {
 
         // Now test the fee estimates for a known priority level, let's say medium (50th percentile)
         let estimates = calculation1(
-            &vec![accounts.get(0).unwrap().clone()],
+            &[*accounts.first().unwrap()],
             false,
             true,
             &Some(150),
@@ -973,30 +936,19 @@ mod tests {
         init_metrics();
         let tracker = PriorityFeeTracker::new(10);
 
-        let mut fees = vec![];
-        let mut i = 0;
-        while i <= 100 {
-            fees.push(i as f64);
-            i += 1;
-        }
+        let fees = (0..=100).map(|i| i as f64).collect::<Vec<_>>();
         let account_1 = Pubkey::new_unique();
         let account_2 = Pubkey::new_unique();
         let account_3 = Pubkey::new_unique();
         let accounts = vec![account_1, account_2, account_3];
 
         // Simulate adding the fixed fees as both account-specific and transaction fees
-        for fee in fees.clone() {
-            tracker.push_priority_fee_for_txn(1, accounts.clone(), fee as u64, false);
+        for fee in &fees {
+            tracker.push_priority_fee_for_txn(1, accounts.clone(), *fee as u64, false);
         }
 
         // Now test the fee estimates for a known priority level, let's say medium (50th percentile)
-        let estimates = calculation2(
-            &vec![accounts.get(0).unwrap().clone()],
-            false,
-            false,
-            &None,
-            &tracker,
-        );
+        let estimates = calculation2(&[*accounts.first().unwrap()], false, false, &None, &tracker);
         // Since the fixed fees are evenly distributed, the 50th percentile should be the middle value
         let expected_min_fee = 0.0;
         let expected_low_fee = 25.0;
@@ -1013,7 +965,7 @@ mod tests {
 
         // Now test the fee estimates for a known priority level, let's say medium (50th percentile)
         let estimates = calculation2(
-            &vec![accounts.get(0).unwrap().clone()],
+            &[*accounts.first().unwrap()],
             false,
             false,
             &Some(150),
@@ -1034,13 +986,7 @@ mod tests {
         assert_eq!(estimates.unsafe_max, expected_max_fee);
 
         // Now test the fee estimates for a known priority level, let's say medium (50th percentile)
-        let estimates = calculation2(
-            &vec![accounts.get(0).unwrap().clone()],
-            false,
-            true,
-            &None,
-            &tracker,
-        );
+        let estimates = calculation2(&[*accounts.first().unwrap()], false, true, &None, &tracker);
         // Since the fixed fees are evenly distributed, the 50th percentile should be the middle value
         let expected_min_fee = 0.0;
         let expected_low_fee = 25.0;
@@ -1057,7 +1003,7 @@ mod tests {
 
         // Now test the fee estimates for a known priority level, let's say medium (50th percentile)
         let estimates = calculation2(
-            &vec![accounts.get(0).unwrap().clone()],
+            &[*accounts.first().unwrap()],
             false,
             true,
             &Some(150),
@@ -1086,29 +1032,19 @@ mod tests {
 
         // adding set of fees at beginning that would mess up percentiles if they were not removed
         let mut fees = vec![10.0, 9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0];
-        let mut i = 0;
-        while i <= 100 {
-            fees.push(i as f64);
-            i += 1;
-        }
+        fees.extend((0..=100).map(|i| i as f64));
         let account_1 = Pubkey::new_unique();
         let account_2 = Pubkey::new_unique();
         let account_3 = Pubkey::new_unique();
         let accounts = vec![account_1, account_2, account_3];
 
         // Simulate adding the fixed fees as both account-specific and transaction fees
-        for (i, fee) in fees.clone().into_iter().enumerate() {
-            tracker.push_priority_fee_for_txn(i as Slot, accounts.clone(), fee as u64, false);
+        for (i, fee) in fees.iter().enumerate() {
+            tracker.push_priority_fee_for_txn(i as Slot, accounts.clone(), *fee as u64, false);
         }
 
         // Now test the fee estimates for a known priority level, let's say medium (50th percentile)
-        let estimates = calculation1(
-            &vec![accounts.get(0).unwrap().clone()],
-            false,
-            false,
-            &None,
-            &tracker,
-        );
+        let estimates = calculation1(&[*accounts.first().unwrap()], false, false, &None, &tracker);
         let expected_min_fee = 0.0;
         let expected_low_fee = 25.0;
         let expected_medium_fee = 50.0;
@@ -1124,7 +1060,7 @@ mod tests {
 
         // Now test the fee estimates for a known priority level, let's say medium (50th percentile)
         let estimates = calculation1(
-            &vec![accounts.get(0).unwrap().clone()],
+            &[*accounts.first().unwrap()],
             false,
             false,
             &Some(150),
@@ -1144,13 +1080,7 @@ mod tests {
         assert_eq!(estimates.unsafe_max, expected_max_fee);
 
         // Now test the fee estimates for a known priority level, let's say medium (50th percentile)
-        let estimates = calculation1(
-            &vec![accounts.get(0).unwrap().clone()],
-            false,
-            true,
-            &None,
-            &tracker,
-        );
+        let estimates = calculation1(&[*accounts.first().unwrap()], false, true, &None, &tracker);
         let expected_min_fee = 0.0;
         let expected_low_fee = 25.0;
         let expected_medium_fee = 50.0;
@@ -1166,7 +1096,7 @@ mod tests {
 
         // Now test the fee estimates for a known priority level, let's say medium (50th percentile)
         let estimates = calculation1(
-            &vec![accounts.get(0).unwrap().clone()],
+            &[*accounts.first().unwrap()],
             false,
             true,
             &Some(150),
@@ -1193,29 +1123,19 @@ mod tests {
 
         // adding set of fees at beginning that would mess up percentiles if they were not removed
         let mut fees = vec![10.0, 9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0];
-        let mut i = 0;
-        while i <= 100 {
-            fees.push(i as f64);
-            i += 1;
-        }
+        fees.extend((0..=100).map(|i| i as f64));
         let account_1 = Pubkey::new_unique();
         let account_2 = Pubkey::new_unique();
         let account_3 = Pubkey::new_unique();
         let accounts = vec![account_1, account_2, account_3];
 
         // Simulate adding the fixed fees as both account-specific and transaction fees
-        for (i, fee) in fees.clone().into_iter().enumerate() {
-            tracker.push_priority_fee_for_txn(i as Slot, accounts.clone(), fee as u64, false);
+        for (i, fee) in fees.iter().enumerate() {
+            tracker.push_priority_fee_for_txn(i as Slot, accounts.clone(), *fee as u64, false);
         }
 
         // Now test the fee estimates for a known priority level, let's say medium (50th percentile)
-        let estimates = calculation2(
-            &vec![accounts.get(0).unwrap().clone()],
-            false,
-            false,
-            &None,
-            &tracker,
-        );
+        let estimates = calculation2(&[*accounts.first().unwrap()], false, false, &None, &tracker);
         let expected_min_fee = 0.0;
         let expected_low_fee = 25.0;
         let expected_medium_fee = 50.0;
@@ -1231,7 +1151,7 @@ mod tests {
 
         // Now test the fee estimates for a known priority level, let's say medium (50th percentile)
         let estimates = calculation2(
-            &vec![accounts.get(0).unwrap().clone()],
+            &[*accounts.first().unwrap()],
             false,
             false,
             &Some(150),
@@ -1251,13 +1171,7 @@ mod tests {
         assert_eq!(estimates.unsafe_max, expected_max_fee);
 
         // Now test the fee estimates for a known priority level, let's say medium (50th percentile)
-        let estimates = calculation2(
-            &vec![accounts.get(0).unwrap().clone()],
-            false,
-            true,
-            &None,
-            &tracker,
-        );
+        let estimates = calculation2(&[*accounts.first().unwrap()], false, true, &None, &tracker);
         let expected_min_fee = 0.0;
         let expected_low_fee = 25.0;
         let expected_medium_fee = 50.0;
@@ -1273,7 +1187,7 @@ mod tests {
 
         // Now test the fee estimates for a known priority level, let's say medium (50th percentile)
         let estimates = calculation2(
-            &vec![accounts.get(0).unwrap().clone()],
+            &[*accounts.first().unwrap()],
             false,
             true,
             &Some(150),
@@ -1301,11 +1215,7 @@ mod tests {
 
         // adding set of fees at beginning that would mess up percentiles if they were not removed
         let mut fees = vec![10.0, 9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0];
-        let mut i = 0;
-        while i <= 100 {
-            fees.push(i as f64);
-            i += 1;
-        }
+        fees.extend((0..=100).map(|i| i as f64));
 
         let account_1 = Pubkey::new_unique();
         let account_2 = Pubkey::new_unique();
@@ -1314,27 +1224,21 @@ mod tests {
         let accounts = vec![account_1, account_2, account_3];
 
         // Simulate adding the fixed fees as both account-specific and transaction fees
-        for (i, fee) in fees.clone().into_iter().enumerate() {
+        for (i, fee) in fees.iter().enumerate() {
             if 0 == i.rem_euclid(10usize) {
                 tracker.push_priority_fee_for_txn(
                     i as Slot,
                     vec![account_unrelated],
-                    fee as u64,
+                    *fee as u64,
                     false,
                 );
             } else {
-                tracker.push_priority_fee_for_txn(i as Slot, accounts.clone(), fee as u64, false);
+                tracker.push_priority_fee_for_txn(i as Slot, accounts.clone(), *fee as u64, false);
             }
         }
 
         // Now test the fee estimates for a known priority level, let's say medium (50th percentile)
-        let estimates = calculation1(
-            &vec![accounts.get(0).unwrap().clone()],
-            false,
-            false,
-            &None,
-            &tracker,
-        );
+        let estimates = calculation1(&[*accounts.first().unwrap()], false, false, &None, &tracker);
         let expected_low_fee = 24.0;
         let expected_medium_fee = 50.0;
         let expected_high_fee = 75.0;
@@ -1346,7 +1250,7 @@ mod tests {
 
         // Now test the fee estimates for a known priority level, let's say medium (50th percentile)
         let estimates = calculation1(
-            &vec![accounts.get(0).unwrap().clone()],
+            &[*accounts.first().unwrap()],
             false,
             false,
             &Some(150),
@@ -1362,13 +1266,7 @@ mod tests {
         assert_eq!(estimates.very_high, expected_very_high_fee);
 
         // Now test the fee estimates for a known priority level, let's say medium (50th percentile)
-        let estimates = calculation1(
-            &vec![accounts.get(0).unwrap().clone()],
-            false,
-            true,
-            &None,
-            &tracker,
-        );
+        let estimates = calculation1(&[*accounts.first().unwrap()], false, true, &None, &tracker);
         let expected_low_fee = 24.0;
         let expected_medium_fee = 50.0;
         let expected_high_fee = 75.0;
@@ -1380,7 +1278,7 @@ mod tests {
 
         // Now test the fee estimates for a known priority level, let's say medium (50th percentile)
         let estimates = calculation1(
-            &vec![accounts.get(0).unwrap().clone()],
+            &[*accounts.first().unwrap()],
             false,
             true,
             &Some(150),
@@ -1403,14 +1301,8 @@ mod tests {
         let tracker = PriorityFeeTracker::new(102);
 
         // adding set of fees at beginning that would mess up percentiles if they were not removed
-
-        // adding set of fees at beginning that would mess up percentiles if they were not removed
         let mut fees = vec![10.0, 9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0];
-        let mut i = 0;
-        while i <= 100 {
-            fees.push(i as f64);
-            i += 1;
-        }
+        fees.extend((0..=100).map(|i| i as f64));
 
         let account_1 = Pubkey::new_unique();
         let account_2 = Pubkey::new_unique();
@@ -1419,27 +1311,21 @@ mod tests {
         let accounts = vec![account_1, account_2, account_3];
 
         // Simulate adding the fixed fees as both account-specific and transaction fees
-        for (i, fee) in fees.clone().into_iter().enumerate() {
+        for (i, fee) in fees.iter().enumerate() {
             if 0 == i.rem_euclid(10usize) {
                 tracker.push_priority_fee_for_txn(
                     i as Slot,
                     vec![account_unrelated],
-                    fee as u64,
+                    *fee as u64,
                     false,
                 );
             } else {
-                tracker.push_priority_fee_for_txn(i as Slot, accounts.clone(), fee as u64, false);
+                tracker.push_priority_fee_for_txn(i as Slot, accounts.clone(), *fee as u64, false);
             }
         }
 
         // Now test the fee estimates for a known priority level, let's say medium (50th percentile)
-        let estimates = calculation2(
-            &vec![accounts.get(0).unwrap().clone()],
-            false,
-            false,
-            &None,
-            &tracker,
-        );
+        let estimates = calculation2(&[*accounts.first().unwrap()], false, false, &None, &tracker);
         let expected_low_fee = 24.0;
         let expected_medium_fee = 50.0;
         let expected_high_fee = 75.0;
@@ -1451,7 +1337,7 @@ mod tests {
 
         // Now test the fee estimates for a known priority level, let's say medium (50th percentile)
         let estimates = calculation2(
-            &vec![accounts.get(0).unwrap().clone()],
+            &[*accounts.first().unwrap()],
             false,
             false,
             &Some(150),
@@ -1467,13 +1353,7 @@ mod tests {
         assert_eq!(estimates.very_high, expected_very_high_fee);
 
         // Now test the fee estimates for a known priority level, let's say medium (50th percentile)
-        let estimates = calculation2(
-            &vec![accounts.get(0).unwrap().clone()],
-            false,
-            true,
-            &None,
-            &tracker,
-        );
+        let estimates = calculation2(&[*accounts.first().unwrap()], false, true, &None, &tracker);
         let expected_low_fee = 24.0;
         let expected_medium_fee = 50.0;
         let expected_high_fee = 75.0;
@@ -1485,7 +1365,7 @@ mod tests {
 
         // Now test the fee estimates for a known priority level, let's say medium (50th percentile)
         let estimates = calculation2(
-            &vec![accounts.get(0).unwrap().clone()],
+            &[*accounts.first().unwrap()],
             false,
             true,
             &Some(150),
@@ -1507,27 +1387,22 @@ mod tests {
         init_metrics();
         let tracker = PriorityFeeTracker::new(10);
 
-        let mut fees = vec![];
-        let mut i = 0;
-        while i <= 100 {
-            fees.push(i as f64);
-            i += 1;
-        }
+        let fees = (0..=100).map(|i| i as f64).collect::<Vec<_>>();
         let account_1 = Pubkey::new_unique();
         let account_2 = Pubkey::new_unique();
         let account_3 = Pubkey::new_unique();
         let accounts = vec![account_1, account_2, account_3];
 
         // Simulate adding the fixed fees as both account-specific and transaction fees
-        for fee in fees.clone() {
-            tracker.push_priority_fee_for_txn(1, accounts.clone(), fee as u64, false);
+        for fee in &fees {
+            tracker.push_priority_fee_for_txn(1, accounts.clone(), *fee as u64, false);
         }
         for _ in 0..10 {
             tracker.push_priority_fee_for_txn(1, accounts.clone(), 1000000, true);
         }
 
         // Now test the fee estimates for a known priority level, let's say medium (50th percentile)
-        let v = vec![account_1];
+        let v = [account_1];
         let estimates = calculation1(&v, false, false, &None, &tracker);
         // Since the fixed fees are evenly distributed, the 50th percentile should be the middle value
         let expected_min_fee = 0.0;
@@ -1595,27 +1470,22 @@ mod tests {
         init_metrics();
         let tracker = PriorityFeeTracker::new(10);
 
-        let mut fees = vec![];
-        let mut i = 0;
-        while i <= 100 {
-            fees.push(i as f64);
-            i += 1;
-        }
+        let fees = (0..=100).map(|i| i as f64).collect::<Vec<_>>();
         let account_1 = Pubkey::new_unique();
         let account_2 = Pubkey::new_unique();
         let account_3 = Pubkey::new_unique();
         let accounts = vec![account_1, account_2, account_3];
 
         // Simulate adding the fixed fees as both account-specific and transaction fees
-        for fee in fees.clone() {
-            tracker.push_priority_fee_for_txn(1, accounts.clone(), fee as u64, false);
+        for fee in &fees {
+            tracker.push_priority_fee_for_txn(1, accounts.clone(), *fee as u64, false);
         }
         for _ in 0..10 {
             tracker.push_priority_fee_for_txn(1, accounts.clone(), 1000000, true);
         }
 
         // Now test the fee estimates for a known priority level, let's say medium (50th percentile)
-        let v = vec![account_1];
+        let v = [account_1];
         let estimates = calculation2(&v, false, false, &None, &tracker);
         // Since the fixed fees are evenly distributed, the 50th percentile should be the middle value
         let expected_min_fee = 0.0;
@@ -1685,10 +1555,10 @@ mod tests {
             let (message_accounts, header, expectation) = data;
             let result = construct_writable_accounts(message_accounts.clone(), header);
             assert_eq!(result.len(), expectation.len());
-            let expectation = &expectation.clone().into_iter().collect::<HashSet<Pubkey>>();
-            let result = &result.clone().into_iter().collect::<HashSet<Pubkey>>();
-            let diff1 = expectation - result;
-            let diff2 = result - expectation;
+            let expectation = expectation.iter().copied().collect::<HashSet<Pubkey>>();
+            let result = result.into_iter().collect::<HashSet<Pubkey>>();
+            let diff1 = &expectation - &result;
+            let diff2 = &result - &expectation;
 
             assert!(
                 diff1.is_empty(),
@@ -1723,19 +1593,19 @@ mod tests {
         let comp3 = ComputeBudgetInstruction::set_loaded_accounts_data_size_limit(300_000).data;
         let comp4 = ComputeBudgetInstruction::request_heap_frame(64 * 1024).data;
 
-        let random_account = "some app -- ignore".as_bytes().to_vec();
+        let random_account = b"some app -- ignore".to_vec();
         let instructions = [
             (2u8, random_account, vec![]),
-            (3u8, comp1.clone(), Vec::with_capacity(0)),
-            (3u8, comp2.clone(), Vec::with_capacity(0)),
-            (3u8, comp3.clone(), Vec::with_capacity(0)),
-            (3u8, comp4.clone(), Vec::with_capacity(0)),
-            (4u8, comp1, vec![0u8, 1u8].to_vec()),
+            (3u8, comp1.clone(), vec![]),
+            (3u8, comp2, vec![]),
+            (3u8, comp3, vec![]),
+            (3u8, comp4, vec![]),
+            (4u8, comp1, vec![0u8, 1u8]),
         ];
 
         let fee = calculate_priority_fee_details(
             &construct_accounts(&account_keys[..])?,
-            &construct_instructions(instructions.to_vec())?,
+            &construct_instructions(&instructions)?,
         )?;
         assert_eq!(fee, 200_000);
 
@@ -1743,14 +1613,16 @@ mod tests {
     }
 
     fn construct_instructions(
-        instructions: Vec<(u8, Vec<u8>, Vec<u8>)>,
+        instructions: &[(u8, Vec<u8>, Vec<u8>)],
     ) -> Result<Vec<CompiledInstruction>, anyhow::Error> {
         let res: Result<Vec<CompiledInstruction>, _> = instructions
-            .into_iter()
+            .iter()
             .map(|data| {
                 let (prog_id, operations, accounts) = data;
                 Ok::<CompiledInstruction, anyhow::Error>(CompiledInstruction::new_from_raw_parts(
-                    prog_id, operations, accounts,
+                    *prog_id,
+                    operations.clone(),
+                    accounts.clone(),
                 ))
             })
             .collect();
@@ -1773,7 +1645,7 @@ mod tests {
         let p5 = Pubkey::new_unique();
 
         vec![
-            (Vec::with_capacity(0), None, Vec::with_capacity(0)),
+            (vec![], None, vec![]),
             (vec![p1], None, vec![p1]),
             (vec![p1, p2], None, vec![p1, p2]),
             // one unsigned account

@@ -1,3 +1,8 @@
+//! Atlas Priority Fee Estimator Binary
+//!
+//! This binary starts the priority fee estimator service, which consumes
+//! Solana Geyser data via gRPC and provides a JSON-RPC API for fee estimation.
+
 use std::{env, net::UdpSocket, sync::Arc};
 
 use atlas_priority_fee_estimator::grpc_geyser::GrpcGeyserImpl;
@@ -26,16 +31,14 @@ struct EstimatorEnv {
 async fn main() {
     // Init metrics/logging
     let env: EstimatorEnv = Figment::from(Env::raw()).extract().unwrap();
-    let env_filter = env::var("RUST_LOG")
-        .or::<Result<String, ()>>(Ok("info".to_string()))
-        .unwrap();
+    let env_filter = env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
     tracing_subscriber::fmt()
         .with_env_filter(env_filter)
         .json()
         .init();
     new_metrics_client();
     let max_lookback_slots = env.max_lookback_slots.unwrap_or(150);
-    let priority_fee_tracker = Arc::new(PriorityFeeTracker::new(max_lookback_slots.clone()));
+    let priority_fee_tracker = Arc::new(PriorityFeeTracker::new(max_lookback_slots));
     // start grpc consumer
     let _ = GrpcGeyserImpl::new(
         env.grpc_url,
@@ -56,19 +59,16 @@ async fn main() {
         )
         .build(format!("0.0.0.0:{}", port))
         .await
-        .expect(format!("failed to start server on port {}", port).as_str());
+        .unwrap_or_else(|_| panic!("failed to start server on port {}", port));
     let rpc = AtlasPriorityFeeEstimator::new(priority_fee_tracker, env.rpc_url, max_lookback_slots);
     let handle = server.start(rpc.into_rpc());
     handle.stopped().await;
 }
 
 fn new_metrics_client() {
-    let uri = env::var("METRICS_URI")
-        .or::<String>(Ok("127.0.0.1".to_string()))
-        .unwrap();
+    let uri = env::var("METRICS_URI").unwrap_or_else(|_| "127.0.0.1".to_string());
     let port = env::var("METRICS_PORT")
-        .or::<String>(Ok("7998".to_string()))
-        .unwrap()
+        .unwrap_or_else(|_| "7998".to_string())
         .parse::<u16>()
         .unwrap();
     info!("collecting metrics on: {}:{}", uri, port);

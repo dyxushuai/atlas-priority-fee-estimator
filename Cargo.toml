@@ -3,6 +3,14 @@ name = "atlas_priority_fee_estimator"
 version = "0.1.0"
 edition = "2021"
 
+[lints.rust]
+unreachable_pub = "warn"
+missing_docs = "warn"
+
+[lints.clippy]
+redundant_pub_crate = "warn"
+missing_const_for_fn = "warn"
+
 [dependencies]
 solana-sdk = { version = "3", features = ["full"] }
 solana-client = { version = "3" }

@@ -12,6 +12,7 @@ use crate::errors::invalid_request;
 
 const MAX_BASE58_SIZE: usize = 1683; // Golden, bump if PACKET_DATA_SIZE changes
 const MAX_BASE64_SIZE: usize = 1644; // Golden, bump if PACKET_DATA_SIZE changes
+/// Decodes and deserializes a transaction from a string with the specified encoding.
 pub fn decode_and_deserialize<T>(
     encoded: String,
     encoding: TransactionBinaryEncoding,

@@ -12,23 +12,35 @@ use Calculations::{Calculation1, Calculation2};
 pub type DataStats<'a> = HashMap<DataType<'a>, Data<Vec<f64>>>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]
+/// Enum representing different priority fee calculation algorithms.
 pub enum Calculations<'a> {
+    /// Algorithm 1: Collects all transaction fees and fees for specified accounts over n slots.
     Calculation1 {
+        /// Accounts to filter fees for.
         accounts: &'a [Pubkey],
+        /// Whether to include vote transactions.
         include_vote: bool,
+        /// Whether to include empty slots in the calculation.
         include_empty_slots: bool,
+        /// Lookback period in slots.
         lookback_period: &'a Option<u32>,
     },
+    /// Algorithm 2: Collects all transaction fees and fees for each specified account separately.
     Calculation2 {
+        /// Accounts to filter fees for.
         accounts: &'a [Pubkey],
+        /// Whether to include vote transactions.
         include_vote: bool,
+        /// Whether to include empty slots in the calculation.
         include_empty_slots: bool,
+        /// Lookback period in slots.
         lookback_period: &'a Option<u32>,
     },
 }
 
 impl<'a> Calculations<'a> {
-    pub fn new_calculation1(
+    /// Creates a new Calculation1 instance.
+    pub const fn new_calculation1(
         accounts: &'a [Pubkey],
         include_vote: bool,
         include_empty_slots: bool,
@@ -42,7 +54,8 @@ impl<'a> Calculations<'a> {
         }
     }
 
-    pub fn new_calculation2(
+    /// Creates a new Calculation2 instance.
+    pub const fn new_calculation2(
         accounts: &'a [Pubkey],
         include_vote: bool,
         include_empty_slots: bool,
@@ -56,6 +69,7 @@ impl<'a> Calculations<'a> {
         }
     }
 
+    /// Calculates priority fee estimates based on the selected algorithm.
     pub fn get_priority_fee_estimates(
         &self,
         priority_fees: &PriorityFeesBySlot,
@@ -121,7 +135,7 @@ mod v1 {
     /// 3. will calculate the percentile distributions for each of two groups
     /// 4. will choose the highest value from each percentile between two groups
     ///
-    pub(crate) fn get_priority_fee_estimates<'a>(
+    pub(super) fn get_priority_fee_estimates<'a>(
         accounts: &'a [Pubkey],
         include_vote: &bool,
         include_empty_slots: &bool,
@@ -134,7 +148,7 @@ mod v1 {
 
         let slots_vec = slots_vec;
 
-        let lookback = calculate_lookback_size(&lookback_period, slots_vec.len());
+        let lookback = calculate_lookback_size(lookback_period, slots_vec.len());
 
         let mut global_fees: Vec<f64> = Vec::new();
         let mut account_fees: Vec<f64> = Vec::new();
@@ -145,7 +159,7 @@ mod v1 {
                 }
                 global_fees.extend_from_slice(&slot_priority_fees.fees.non_vote_fees);
 
-                if 0 < accounts.len() {
+                if !accounts.is_empty() {
                     let mut has_data = false;
                     accounts.iter().for_each(|account| {
                         if let Some(account_priority_fees) =
@@ -158,10 +172,8 @@ mod v1 {
                             has_data = true;
                         }
                     });
-                    if !has_data {
-                        if *include_empty_slots {
-                            account_fees.push(0f64);
-                        }
+                    if !has_data && *include_empty_slots {
+                        account_fees.push(0f64);
                     }
                 }
             }
@@ -188,7 +200,7 @@ mod v2 {
     /// 2. for each specified account collect the fees and calculate the percentiles
     /// 4. choose maximum values for each percentile between all transactions and each account
     ///
-    pub(crate) fn get_priority_fee_estimates<'a>(
+    pub(super) fn get_priority_fee_estimates<'a>(
         accounts: &'a [Pubkey],
         include_vote: &bool,
         include_empty_slots: &bool,
@@ -201,12 +213,12 @@ mod v2 {
 
         let slots_vec = slots_vec;
 
-        let lookback = calculate_lookback_size(&lookback_period, slots_vec.len());
+        let lookback = calculate_lookback_size(lookback_period, slots_vec.len());
 
         let mut data: HashMap<DataType<'a>, Vec<f64>> = HashMap::new();
         for slot in &slots_vec[..lookback] {
             if let Some(slot_priority_fees) = priority_fees.get(slot) {
-                let fees: &mut Vec<f64> = data.entry(DataType::Global).or_insert(Vec::new());
+                let fees: &mut Vec<f64> = data.entry(DataType::Global).or_default();
 
                 if *include_vote {
                     fees.extend_from_slice(&slot_priority_fees.fees.vote_fees);
@@ -218,8 +230,7 @@ mod v2 {
                     Always insert the fees list for every account
                     If account has no fees than we can fill the buckets with 0 for every slot missed
                      */
-                    let fees: &mut Vec<f64> =
-                        data.entry(DataType::Account(account)).or_insert(Vec::new());
+                    let fees: &mut Vec<f64> = data.entry(DataType::Account(account)).or_default();
                     if let Some(account_priority_fees) =
                         slot_priority_fees.account_fees.get(account)
                     {
@@ -266,7 +277,6 @@ mod tests {
         let client = StatsdClient::builder("", noop).build();
         set_global_default(client)
     }
-
 
     #[tokio::test]
     async fn test_specific_fee_estimates_for_global_accounts_only() {
@@ -319,7 +329,6 @@ mod tests {
             assert!(stats.percentile(99).is_nan());
         }
 
-
         // Scenario 2: with vote transactions and no empty slots and default lookback period
         let calc = Calculations::new_calculation1(&accounts, true, false, &None);
         let mut estimates: DataStats = calc
@@ -347,9 +356,6 @@ mod tests {
             assert!(stats.percentile(95).is_nan());
             assert!(stats.percentile(99).is_nan());
         }
-
-
-
 
         // Scenario 3: with vote transactions and empty slots and default lookback period
         let calc = Calculations::new_calculation1(&accounts, true, true, &None);
@@ -379,8 +385,6 @@ mod tests {
             assert!(stats.percentile(99).is_nan());
         }
 
-
-
         // Scenario 4: with vote transactions and empty slots and different lookback period
         let calc = Calculations::new_calculation1(&accounts, true, true, &Some(1));
         let mut estimates: DataStats = calc
@@ -409,7 +413,6 @@ mod tests {
             assert!(stats.percentile(99).is_nan());
         }
     }
-
 
     #[tokio::test]
     async fn test_specific_fee_estimates_for_global_accounts_only_v2() {
@@ -470,7 +473,6 @@ mod tests {
             assert_eq!(stats.percentile(99).round(), 100.0);
         }
 
-
         // Scenario 3: with vote transactions and empty slots and default lookback period
         let calc = Calculations::new_calculation2(&accounts, true, true, &None);
         let mut estimates: DataStats = calc
@@ -489,7 +491,6 @@ mod tests {
             assert_eq!(stats.percentile(99).round(), 100.0);
         }
 
-
         // Scenario 4: with vote transactions and empty slots and different lookback period
         let calc = Calculations::new_calculation2(&accounts, true, true, &Some(1));
         let mut estimates: DataStats = calc
@@ -507,7 +508,6 @@ mod tests {
             assert_eq!(stats.percentile(95).round(), 96.0);
             assert_eq!(stats.percentile(99).round(), 100.0);
         }
-
     }
 
     #[tokio::test]
@@ -559,8 +559,6 @@ mod tests {
             assert_eq!(stats.percentile(99).round(), 100.0);
         }
 
-
-
         // Scenario 2: no vote transactions and no empty slots and default lookback period
         let calc = Calculations::new_calculation1(&accounts[..=0], true, false, &None);
         let mut estimates: DataStats = calc
@@ -587,9 +585,7 @@ mod tests {
             assert_eq!(stats.percentile(75).round(), 75.0);
             assert_eq!(stats.percentile(95).round(), 96.0);
             assert_eq!(stats.percentile(99).round(), 100.0);
-
         }
-
 
         // Scenario 1: no vote transactions and no empty slots and default lookback period
         let calc = Calculations::new_calculation1(&accounts[..=0], true, true, &None);
@@ -617,10 +613,7 @@ mod tests {
             assert_eq!(stats.percentile(75).round(), 75.0);
             assert_eq!(stats.percentile(95).round(), 96.0);
             assert_eq!(stats.percentile(99).round(), 100.0);
-
         }
-
-
 
         // Scenario 1: no vote transactions and no empty slots and default lookback period
         let calc = Calculations::new_calculation1(&accounts[..=0], true, true, &Some(1));
@@ -648,11 +641,10 @@ mod tests {
             assert_eq!(stats.percentile(75).round(), 75.0);
             assert_eq!(stats.percentile(95).round(), 96.0);
             assert_eq!(stats.percentile(99).round(), 100.0);
-
         }
     }
 
-  #[tokio::test]
+    #[tokio::test]
     async fn test_specific_fee_estimates_v2() {
         init_metrics();
         let tracker = PriorityFeesBySlot::default();
@@ -701,8 +693,6 @@ mod tests {
             assert_eq!(stats.percentile(99).round(), 100.0);
         }
 
-
-
         // Scenario 2: no vote transactions and no empty slots and default lookback period
         let calc = Calculations::new_calculation2(&accounts[..=0], true, false, &None);
         let mut estimates: DataStats = calc
@@ -729,9 +719,7 @@ mod tests {
             assert_eq!(stats.percentile(75).round(), 75.0);
             assert_eq!(stats.percentile(95).round(), 96.0);
             assert_eq!(stats.percentile(99).round(), 100.0);
-
         }
-
 
         // Scenario 1: no vote transactions and no empty slots and default lookback period
         let calc = Calculations::new_calculation2(&accounts[..=0], true, true, &None);
@@ -759,10 +747,7 @@ mod tests {
             assert_eq!(stats.percentile(75).round(), 75.0);
             assert_eq!(stats.percentile(95).round(), 96.0);
             assert_eq!(stats.percentile(99).round(), 100.0);
-
         }
-
-
 
         // Scenario 1: no vote transactions and no empty slots and default lookback period
         let calc = Calculations::new_calculation2(&accounts[..=0], true, true, &Some(1));
@@ -790,7 +775,6 @@ mod tests {
             assert_eq!(stats.percentile(75).round(), 75.0);
             assert_eq!(stats.percentile(95).round(), 96.0);
             assert_eq!(stats.percentile(99).round(), 100.0);
-
         }
     }
 

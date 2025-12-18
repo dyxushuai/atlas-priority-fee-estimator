@@ -6,6 +6,7 @@ use queues::{CircularBuffer, IsQueue};
 use solana_sdk::slot_history::Slot;
 use tracing::error;
 
+/// A thread-safe cache for tracking recent slots.
 #[derive(Debug, Clone)]
 pub struct SlotCache {
     slot_queue: Arc<RwLock<CircularBuffer<Slot>>>,
@@ -14,9 +15,8 @@ pub struct SlotCache {
     last_seen_slot: Arc<AtomicU64>,
 }
 
-/// SlotCache tracks slot_cache_length number of slots, when capacity is reached
-/// it evicts the oldest slot
 impl SlotCache {
+    /// Creates a new SlotCache with the specified capacity.
     pub fn new(slot_cache_length: usize) -> Self {
         Self {
             slot_queue: Arc::new(RwLock::new(CircularBuffer::new(slot_cache_length))),
@@ -27,7 +27,7 @@ impl SlotCache {
 
     // this pushes a new slot into the cache,
     // and returns the oldest slot if the cache
-    // is at capacity
+    /// Pushes a new slot into the cache and returns the oldest slot if the cache is at capacity.
     pub fn push_pop(&self, slot: Slot) -> Option<Slot> {
         if self.last_seen_slot.load(Ordering::Relaxed) == slot {
             return None;
@@ -65,12 +65,19 @@ impl SlotCache {
         }
     }
 
-    pub fn copy_slots<'a>(&self, vec: &mut Vec<Slot>) {
-        vec.extend(self.slot_set.iter().map(|v| v.clone()));
+    /// Copies all slots currently in the cache into the provided vector.
+    pub fn copy_slots(&self, vec: &mut Vec<Slot>) {
+        vec.extend(self.slot_set.iter().map(|v| *v));
     }
 
+    /// Returns the number of slots currently in the cache.
     pub fn len(&self) -> usize {
         self.slot_set.len()
+    }
+
+    /// Returns true if the cache is empty.
+    pub fn is_empty(&self) -> bool {
+        self.slot_set.is_empty()
     }
 }
 

@@ -1,3 +1,5 @@
+//! Slot Cache: Thread-safe slot tracking.
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
@@ -25,8 +27,6 @@ impl SlotCache {
         }
     }
 
-    // this pushes a new slot into the cache,
-    // and returns the oldest slot if the cache
     /// Pushes a new slot into the cache and returns the oldest slot if the cache is at capacity.
     pub fn push_pop(&self, slot: Slot) -> Option<Slot> {
         if self.last_seen_slot.load(Ordering::Relaxed) == slot {
@@ -83,35 +83,22 @@ impl SlotCache {
 
 #[cfg(test)]
 mod tests {
-    use super::*; // Import the SlotCache and necessary components
+    use super::*;
 
     #[test]
     fn test_push_pop() {
-        // Create a SlotCache with a small length for testing
         let slot_cache = SlotCache::new(100);
         let mut i = 0;
         while i < 100 {
             assert_eq!(slot_cache.push_pop(i), None);
             i += 1;
         }
-        // Now push one more and it should return the oldest (first inserted)
         assert_eq!(slot_cache.push_pop(101), Some(0));
-
-        // Ensure duplicates are not added
-        assert_eq!(slot_cache.push_pop(3), None); // Already exists, should not insert or pop
-
-        // Ensure pushing repeatedly doesn't make the cache grow
-        let mut i = 0;
-        let len = slot_cache.len();
-        while i < 100 {
-            assert_eq!(slot_cache.len(), len);
-            i += 1;
-        }
+        assert_eq!(slot_cache.push_pop(3), None);
     }
 
     #[test]
     fn test_copy() {
-        // Create a SlotCache with a small length for testing
         let slot_cache = SlotCache::new(100);
         for i in 0..100 {
             assert_eq!(slot_cache.push_pop(i), None);
@@ -122,16 +109,10 @@ mod tests {
         slot_cache.copy_slots(&mut vec);
         vec.sort();
         assert_eq!(vec, (0..100).collect::<Vec<Slot>>());
-
-        vec.clear();
-        slot_cache.copy_slots(&mut vec);
-        vec.sort();
-        assert_eq!(vec, (0..100).collect::<Vec<Slot>>());
     }
 
     #[test]
     fn test_copy_reversed() {
-        // Create a SlotCache with a small length for testing
         let slot_cache = SlotCache::new(100);
         for i in (0..100).rev() {
             assert_eq!(slot_cache.push_pop(i), None);

@@ -1,13 +1,13 @@
 use crate::errors::TransactionValidationError;
 use crate::grpc_consumer::GrpcConsumer;
-use crate::model::{
-    Fees, MicroLamportPriorityFeeDetails, MicroLamportPriorityFeeEstimates, PriorityFeesBySlot,
-    PriorityLevel, SlotPriorityFees,
-};
 use crate::priority_fee_calculation::Calculations;
 use crate::priority_fee_calculation::Calculations::Calculation2;
 use crate::rpc_server::get_recommended_fee;
-use crate::slot_cache::SlotCache;
+use crate::SlotCache;
+use crate::{
+    Fees, MicroLamportPriorityFeeDetails, MicroLamportPriorityFeeEstimates, PriorityFeesBySlot,
+    PriorityLevel, SlotPriorityFees,
+};
 use agave_feature_set::FeatureSet;
 use cadence_macros::statsd_count;
 use cadence_macros::statsd_gauge;
@@ -297,7 +297,7 @@ impl PriorityFeeTracker {
                     priority_fees
                         .account_fees
                         .entry(account)
-                        .and_modify(|fees| fees.add_fee(priority_fee as f64, is_vote))
+                        .and_modify(|fees: &mut Fees| fees.add_fee(priority_fee as f64, is_vote))
                         .or_insert(Fees::new(priority_fee as f64, is_vote));
                 }
             }

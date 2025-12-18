@@ -7,12 +7,10 @@ use std::{
 };
 
 use crate::errors::invalid_request;
-use crate::model::{
-    MicroLamportPriorityFeeDetails, MicroLamportPriorityFeeEstimates, PriorityLevel,
-};
 use crate::priority_fee::{construct_writable_accounts, PriorityFeeTracker};
 use crate::priority_fee_calculation::Calculations;
 use crate::solana::solana_rpc::decode_and_deserialize;
+use crate::{MicroLamportPriorityFeeDetails, MicroLamportPriorityFeeEstimates, PriorityLevel};
 use cadence_macros::{statsd_count, statsd_time};
 use jsonrpsee::types::error::{INTERNAL_ERROR_CODE, INTERNAL_ERROR_MSG};
 use jsonrpsee::{
@@ -392,7 +390,10 @@ impl AtlasPriorityFeeEstimator {
                 .map(|fee| (fee, None))
         };
 
-        let (total_priority_fee_levels, priority_fee_levels) = match result {
+        let (total_priority_fee_levels, priority_fee_levels): (
+            MicroLamportPriorityFeeEstimates,
+            Option<HashMap<String, MicroLamportPriorityFeeDetails>>,
+        ) = match result {
             Ok(level) => level,
             Err(e) => {
                 warn!("failed to calculate priority_fee_levels details: {:#?}", e);

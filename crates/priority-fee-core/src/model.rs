@@ -1,3 +1,5 @@
+//! Data Models: Priority fee types, estimation structures, etc.
+
 use crate::hash::DashMap;
 use serde::{Deserialize, Serialize};
 use solana_sdk::clock::Slot;
@@ -112,8 +114,10 @@ pub struct MicroLamportPriorityFeeDetails {
 /// Collection of fees for a slot or account.
 #[derive(Debug, Clone)]
 pub struct Fees {
-    pub(crate) non_vote_fees: Vec<f64>,
-    pub(crate) vote_fees: Vec<f64>,
+    /// Non-vote transaction fees.
+    pub non_vote_fees: Vec<f64>,
+    /// Vote transaction fees.
+    pub vote_fees: Vec<f64>,
 }
 
 impl Fees {
@@ -145,13 +149,17 @@ impl Fees {
 /// Priority fees for a specific slot.
 #[derive(Debug, Clone)]
 pub struct SlotPriorityFees {
-    pub(crate) slot: Slot,
-    pub(crate) fees: Fees,
-    pub(crate) account_fees: DashMap<Pubkey, Fees>,
+    /// Slot number.
+    pub slot: Slot,
+    /// Global fees for the slot.
+    pub fees: Fees,
+    /// Per-account fees for the slot.
+    pub account_fees: DashMap<Pubkey, Fees>,
 }
 
 impl SlotPriorityFees {
-    pub(crate) fn new(slot: Slot, accounts: Vec<Pubkey>, priority_fee: u64, is_vote: bool) -> Self {
+    /// Creates a new SlotPriorityFees instance.
+    pub fn new(slot: Slot, accounts: Vec<Pubkey>, priority_fee: u64, is_vote: bool) -> Self {
         let account_fees = DashMap::default();
         let fees = Fees::new(priority_fee as f64, is_vote);
         for account in accounts {

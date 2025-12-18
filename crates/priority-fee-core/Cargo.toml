@@ -1,0 +1,20 @@
+[package]
+name = "priority-fee-core"
+version = "0.1.0"
+edition = "2021"
+description = "Solana Priority Fee Estimation Core Algorithm Library"
+license = "MIT"
+
+[lints]
+workspace = true
+
+[dependencies]
+solana-sdk.workspace = true
+dashmap.workspace = true
+rapidhash.workspace = true
+statrs.workspace = true
+queues.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+anyhow.workspace = true

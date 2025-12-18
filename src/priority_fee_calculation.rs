@@ -1,4 +1,4 @@
-use crate::model::{DataType, PriorityFeesBySlot};
+use crate::{DataType, PriorityFeesBySlot};
 use cadence_macros::{statsd_count, statsd_gauge};
 use solana_sdk::pubkey::Pubkey;
 use statrs::statistics::Data;
@@ -122,8 +122,8 @@ impl<'a> Calculations<'a> {
 }
 
 mod v1 {
-    use crate::model::PriorityFeesBySlot;
     use crate::priority_fee_calculation::{calculate_lookback_size, DataStats, DataType};
+    use crate::PriorityFeesBySlot;
     use solana_sdk::clock::Slot;
     use solana_sdk::pubkey::Pubkey;
     use statrs::statistics::Data;
@@ -187,8 +187,8 @@ mod v1 {
 }
 
 mod v2 {
-    use crate::model::PriorityFeesBySlot;
     use crate::priority_fee_calculation::{calculate_lookback_size, DataStats, DataType};
+    use crate::PriorityFeesBySlot;
     use solana_sdk::clock::Slot;
     use solana_sdk::pubkey::Pubkey;
     use statrs::statistics::Data;
@@ -265,8 +265,8 @@ fn calculate_lookback_size(pref_num_slots: &Option<u32>, max_available_slots: us
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Fees, SlotPriorityFees};
     use crate::priority_fee_calculation::DataType::{Account, AllAccounts, Global};
+    use crate::{Fees, SlotPriorityFees};
     use cadence::{NopMetricSink, StatsdClient};
     use cadence_macros::set_global_default;
     use solana_sdk::clock::Slot;
